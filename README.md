@@ -28,3 +28,7 @@
 - **anytls**：`anytls://uuid@server:port...`
 - **hysteria2**：`hysteria2://base64@server:port...`
 - **SOCKS5**：`socks5://user:pass@server:port` 或 `socks://user:pass@server:port`
+
+### 注意事项
+- 尽量添加一个干净的节点，以免过不了cf盾
+- cron时间根据自己的服务到期时间的前一天来修改
