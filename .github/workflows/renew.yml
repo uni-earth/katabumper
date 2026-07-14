@@ -2,24 +2,48 @@ name: Katabump Auto Renew
 
 on:
   schedule:
-  - cron: '22 1 * * *'  # 仅修改此行：改为每天 UTC 1点22分 运行，脚本内部会判断是否跳过
-  workflow_dispatch: # 允许手动触发
+  - cron: '22 1 * * *'  
+  workflow_dispatch: 
 
 jobs:
   Renew-Katabump:
     runs-on: ubuntu-latest
     permissions:
       actions: write  
-      contents: write  # 新增：必须添加此权限，否则无法将 time.txt 推送回代码库
+      contents: write 
     
+    # 将周期提出来作为全局变量，既给前面的拦截用，也给后面的 Python 脚本用
+    env:
+      RENEW_CYCLE: 4 
+
     steps:
     - uses: actions/checkout@v6
+
+    # ---------- 新增：核心拦截器 ----------
+    - name: ⏱️ 前置检查：是否需要执行续期
+      id: check_time
+      run: |
+        if [ -f "time.txt" ]; then
+          # 直接调用 ubuntu 镜像自带的基础 python 执行一句话日期对比
+          SKIP=$(python3 -c "from datetime import datetime, timedelta; print('true') if datetime.now().date() < datetime.strptime(open('time.txt').read().strip(), '%Y-%m-%d').date() + timedelta(days=$RENEW_CYCLE) else print('false')")
+          if [ "$SKIP" == "true" ]; then
+            echo "🛑 尚未到达设定的 ${RENEW_CYCLE} 天周期，触发拦截，跳过后续所有环境安装和执行步骤。"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+        fi
+        echo "✅ 达到续期时间，继续执行。"
+        echo "skip=false" >> $GITHUB_OUTPUT
+    # --------------------------------------
+
     - name: ⚙ 设置 Python
+      if: steps.check_time.outputs.skip != 'true' # 只有时间到了才装 Python
       uses: actions/setup-python@v6
       with:
         python-version: '3.12'
 
     - name: 🛠️ 安装系统依赖和python依赖
+      if: steps.check_time.outputs.skip != 'true' # 只有时间到了才装依赖
       run: |
         sudo apt-get update
         sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk
@@ -27,6 +51,7 @@ jobs:
         seleniumbase install chromedriver
 
     - name: ⚙ 设置代理 (sing-box)
+      if: steps.check_time.outputs.skip != 'true' # 只有时间到了才设代理
       continue-on-error: true
       env:
         NODE_LINK: ${{ secrets.NODE_LINK }}
@@ -34,18 +59,18 @@ jobs:
         bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
 
     - name: 🚀 运行续期脚本
+      if: steps.check_time.outputs.skip != 'true' # 只有时间到了才跑脚本
       env:
         KATABUMP_EMAIL: ${{ secrets.KATABUMP_EMAIL }}
         KATABUMP_PASSWORD: ${{ secrets.KATABUMP_PASSWORD }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        RENEW_CYCLE: 4  # 新增：在此定义你的周期参数n (比如 3)
       run: |
         xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
           python3 app.py
           
-    # 新增：判断如果有 time.txt 生成/修改，则推送到仓库保存 (仅在你唯一的 main 分支上操作)
     - name: 💾 保存最新续期时间到仓库
+      if: steps.check_time.outputs.skip != 'true' # 只有跑了脚本才需要尝试提交
       run: |
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
