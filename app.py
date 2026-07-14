@@ -5,13 +5,14 @@ import os
 import time
 import subprocess
 import requests
+from datetime import datetime, timedelta # 新增：用于日期计算
 from seleniumbase import SB
 
 # 从环境变量获取账号密码和 TG 配置
-EMAIL        = os.environ.get("KATABUMP_EMAIL") or ""    # 登录邮箱
-PASSWORD     = os.environ.get("KATABUMP_PASSWORD") or "" # 账号密码
-TG_CHAT_ID   = os.environ.get("TG_CHAT_ID") or ""        # tg通知 chat id(可选)
-TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or ""      # tg通知bot token(可选)
+EMAIL        = os.environ.get("KATABUMP_EMAIL") or ""    
+PASSWORD     = os.environ.get("KATABUMP_PASSWORD") or "" 
+TG_CHAT_ID   = os.environ.get("TG_CHAT_ID") or ""        
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or ""      
 
 BASE_URL = "https://dashboard.katabump.com"  # 网站链接
 
@@ -202,24 +203,20 @@ def _xdotool_click(x: int, y: int):
     except Exception:
         os.system(f"xdotool mousemove {x} {y} click 1 2>/dev/null")
 
-#  人机验证处理（使用 SeleniumBase 内置 uc_gui_click_captcha）
+#  人机验证处理
 def handle_turnstile(sb) -> bool:
     print("🔍 处理 Cloudflare Turnstile 验证...")
     time.sleep(2)
 
-    # 检查是否已静默通过
     if sb.execute_script(_SOLVED_JS):
         print("✅ 已静默通过")
         return True
 
-    # 尝试展开 Turnstile（防止被父容器 overflow:hidden 裁剪）
     for _ in range(3):
         try: sb.execute_script(_EXPAND_JS)
         except Exception: pass
         time.sleep(0.5)
 
-    # 使用 SeleniumBase 内置 uc_gui_click_captcha 处理 Turnstile
-    # 该方法自动完成：检测验证码类型 → 定位 iframe → 计算坐标 → PyAutoGUI 平滑点击
     for attempt in range(6):
         if sb.execute_script(_SOLVED_JS):
             print(f"✅ Turnstile 通过（第 {attempt} 次尝试）")
@@ -231,7 +228,6 @@ def handle_turnstile(sb) -> bool:
         except Exception as e:
             print(f"⚠️ uc_gui_click_captcha 调用异常: {e}")
 
-        # 等待验证结果（最多 8 秒）
         for _ in range(16):
             time.sleep(0.5)
             if sb.execute_script(_SOLVED_JS):
@@ -249,7 +245,6 @@ def login(sb) -> bool:
     sb.uc_open_with_reconnect(BASE_URL + "/auth/login", reconnect_time=8)
     time.sleep(6)
 
-    # 先等待 Cloudflare 验证通过（最多等 30 秒）
     print("⏳ 等待 Cloudflare 验证通过...")
     cf_passed = False
     for i in range(30):
@@ -265,7 +260,6 @@ def login(sb) -> bool:
     try:
         sb.wait_for_element('input[name="email"]', timeout=15)
     except Exception:
-        # 尝试大写选择器作为后备
         try:
             sb.wait_for_element('input[name="Email"]', timeout=5)
         except Exception:
@@ -295,7 +289,6 @@ def login(sb) -> bool:
     js_fill_input(sb, 'input[name="password"]', PASSWORD)
     time.sleep(1)
 
-    # 等待 Turnstile 验证框出现（最多 10 秒）
     print("⏳ 等待 Turnstile 验证框出现...")
     ts_found = False
     for i in range(10):
@@ -350,14 +343,12 @@ def _goto_server_detail(sb) -> bool:
     print("\n🖥️  正在进入服务器续期页...")
     time.sleep(5)
 
-    # 检查页面顶部是否已有"还无法续期"全局提示
     alert_text = _read_alert(sb)
     if alert_text and "can't renew" in alert_text.lower():
         print(f"ℹ️  页面顶部提示: {alert_text}")
         send_tg_message("ℹ️", "⚠️ 未到续期时间", alert_text)
         return False
 
-    # 多种选择器尝试查找 See 链接
     selectors = [
         'a[href*="/servers/edit?id="]',
         'td a[href*="/servers/edit"]',
@@ -374,7 +365,6 @@ def _goto_server_detail(sb) -> bool:
         except Exception:
             continue
 
-    # 选择器全部失败，尝试通过文本内容查找
     if see_link is None:
         print("⚠️ 选择器未命中，尝试文本匹配...")
         try:
@@ -387,7 +377,6 @@ def _goto_server_detail(sb) -> bool:
             pass
 
     if see_link is None:
-        # 打印调试信息帮助排查
         cur_url = sb.get_current_url()
         title = sb.get_title() or ""
         print(f"❌ 未找到 'See' 链接")
@@ -451,12 +440,10 @@ def _solve_altcha(sb) -> bool:
     print("\n🔐 处理 ALTCHA 人机验证...")
     time.sleep(2)
 
-    # 先检查是否已自动通过
     if sb.execute_script(_ALTCHA_SOLVED_JS):
         print("✅ ALTCHA 已自动通过")
         return True
 
-    # 展开模态框内 iframe 并获取坐标
     coords = None
     try:
         coords = sb.execute_script(_ALTCHA_EXPAND_JS)
@@ -466,13 +453,11 @@ def _solve_altcha(sb) -> bool:
     if coords:
         print(f"  📍 找到模态框内 iframe 坐标: ({coords['cx']}, {coords['cy']})")
 
-    # 最多尝试 3 轮
     for attempt in range(3):
         if sb.execute_script(_ALTCHA_SOLVED_JS):
             print(f"✅ ALTCHA 验证通过（第 {attempt + 1} 轮）")
             return True
 
-        # 策略 1: xdotool 物理点击 iframe 坐标
         if coords:
             try:
                 wi = sb.execute_script(_WININFO_JS)
@@ -484,7 +469,6 @@ def _solve_altcha(sb) -> bool:
             print(f"🖱️  ALTCHA点击复选框  ({ax}, {ay})")
             _xdotool_click(ax, ay)
 
-        # 策略 2: SeleniumBase 原生点击模态框内 iframe 元素
         try:
             iframes = sb.find_elements('div.modal.show iframe')
             for iframe in iframes:
@@ -496,25 +480,21 @@ def _solve_altcha(sb) -> bool:
         except Exception:
             pass
 
-        # 策略 3: JS 遍历模态框内所有可点击元素
         sb.execute_script("""
             (function(){
                 var modal = document.querySelector('div.modal.show');
                 if (!modal) return;
-                // 点击 iframe
                 var iframes = modal.querySelectorAll('iframe');
                 for (var i = 0; i < iframes.length; i++) {
                     iframes[i].click();
                     iframes[i].dispatchEvent(new MouseEvent('click', {bubbles:true}));
                 }
-                // 点击含 checkbox 的 label
                 var labels = modal.querySelectorAll('label');
                 for (var j = 0; j < labels.length; j++) {
                     var txt = (labels[j].textContent || '').toLowerCase();
                     if (txt.includes('robot') || txt.includes('captcha') || txt.includes('verify'))
                         labels[j].click();
                 }
-                // 点击 checkbox
                 var cbs = modal.querySelectorAll('input[type="checkbox"]');
                 for (var k = 0; k < cbs.length; k++) {
                     if (!cbs[k].disabled) {
@@ -525,7 +505,6 @@ def _solve_altcha(sb) -> bool:
             })()
         """)
 
-        # 等待验证结果
         for _ in range(6):
             time.sleep(1)
             if sb.execute_script(_ALTCHA_SOLVED_JS):
@@ -533,7 +512,6 @@ def _solve_altcha(sb) -> bool:
                 return True
 
         print(f"  ⚠️ 第 {attempt + 1} 轮未通过，重试...")
-        # 重新获取坐标（iframe 可能已重新渲染）
         try:
             new_coords = sb.execute_script(_ALTCHA_EXPAND_JS)
             if new_coords:
@@ -579,6 +557,17 @@ def _check_renew_result(sb):
             send_tg_message("⏳", "未到续期时间", alert_text)
         elif any(kw in low for kw in ( "renewed", "success", "extended")):
             send_tg_message("✅", "续期成功", alert_text)
+            
+            # ========== 新增：成功后将日期写入 time.txt ==========
+            try:
+                today_str = datetime.now().strftime("%Y-%m-%d")
+                with open("time.txt", "w") as f:
+                    f.write(today_str)
+                print(f"✅ 已记录本次成功续期日期: {today_str}")
+            except Exception as e:
+                print(f"⚠️ 记录日期到 time.txt 失败: {e}")
+            # ====================================================
+
         else:
             send_tg_message("ℹ️", "续期操作已执行", alert_text)
     else:
@@ -611,6 +600,25 @@ def main():
     print("#" * 25)
     print("   katabump 自动登录续期")
     print("#" * 25)
+
+    # ========== 新增：每次运行前进行日期跳过检查 ==========
+    try:
+        cycle_days = int(os.environ.get("RENEW_CYCLE", 3))
+        if os.path.exists("time.txt"):
+            with open("time.txt", "r") as f:
+                last_date_str = f.read().strip()
+            last_date = datetime.strptime(last_date_str, "%Y-%m-%d").date()
+            target_date = last_date + timedelta(days=cycle_days)
+            today = datetime.now().date()
+            
+            print(f"🗓️ 记录显示上次成功: {last_date} | 下次需执行: {target_date} | 今天: {today}")
+            
+            if today < target_date:
+                print(f"🛑 尚未到达设定的 {cycle_days} 天周期（相差 {(target_date - today).days} 天），直接跳过本次执行。")
+                return  # 直接退出程序，不启动浏览器
+    except Exception as e:
+        print(f"⚠️ 日期检查出现异常 ({e})，将忽略并继续执行。")
+    # =====================================================
 
     IS_PROXY = os.environ.get("IS_PROXY", "false").lower() == "true"
     proxy_str = os.environ.get("PROXY_SERVER", "").strip() or "http://127.0.0.1:1081"
