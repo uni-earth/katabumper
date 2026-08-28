@@ -9,10 +9,10 @@ from datetime import datetime, timedelta # 新增：用于日期计算
 from seleniumbase import SB
 
 # 从环境变量获取账号密码和 TG 配置
-EMAIL        = os.environ.get("KATABUMP_EMAIL") or ""    
-PASSWORD     = os.environ.get("KATABUMP_PASSWORD") or "" 
-TG_CHAT_ID   = os.environ.get("TG_CHAT_ID") or ""        
-TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or ""      
+EMAIL        = os.environ.get("KATABUMP_EMAIL") or ""    # 登录邮箱
+PASSWORD     = os.environ.get("KATABUMP_PASSWORD") or "" # 账号密码
+TG_CHAT_ID   = os.environ.get("TG_CHAT_ID") or ""        # tg通知 chat id(可选)
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN") or ""      # tg通知bot token(可选)
 
 BASE_URL = "https://dashboard.katabump.com"  # 网站链接
 
@@ -194,29 +194,33 @@ def _activate_window():
     except Exception:
         pass
 
-def _xdotool_click(x: int, y: int):
-    _activate_window()
-    try:
-        subprocess.run(["xdotool", "mousemove", "--sync", str(x), str(y)], timeout=3, stderr=subprocess.DEVNULL)
-        time.sleep(0.15)
-        subprocess.run(["xdotool", "click", "1"], timeout=2, stderr=subprocess.DEVNULL)
-    except Exception:
-        os.system(f"xdotool mousemove {x} {y} click 1 2>/dev/null")
+# def _xdotool_click(x: int, y: int):
+#     _activate_window()
+#     try:
+#         subprocess.run(["xdotool", "mousemove", "--sync", str(x), str(y)], timeout=3, stderr=subprocess.DEVNULL)
+#         time.sleep(0.15)
+#         subprocess.run(["xdotool", "click", "1"], timeout=2, stderr=subprocess.DEVNULL)
+#     except Exception:
+#         os.system(f"xdotool mousemove {x} {y} click 1 2>/dev/null")
 
-#  人机验证处理
+#  人机验证处理（使用 SeleniumBase 内置 uc_gui_click_captcha）
 def handle_turnstile(sb) -> bool:
     print("🔍 处理 Cloudflare Turnstile 验证...")
     time.sleep(2)
 
+    # 检查是否已静默通过
     if sb.execute_script(_SOLVED_JS):
         print("✅ 已静默通过")
         return True
 
+    # 尝试展开 Turnstile（防止被父容器 overflow:hidden 裁剪）
     for _ in range(3):
         try: sb.execute_script(_EXPAND_JS)
         except Exception: pass
         time.sleep(0.5)
 
+    # 使用 SeleniumBase 内置 uc_gui_click_captcha 处理 Turnstile
+    # 该方法自动完成：检测验证码类型 → 定位 iframe → 计算坐标 → PyAutoGUI 平滑点击
     for attempt in range(6):
         if sb.execute_script(_SOLVED_JS):
             print(f"✅ Turnstile 通过（第 {attempt} 次尝试）")
@@ -228,6 +232,7 @@ def handle_turnstile(sb) -> bool:
         except Exception as e:
             print(f"⚠️ uc_gui_click_captcha 调用异常: {e}")
 
+        # 等待验证结果（最多 8 秒）
         for _ in range(16):
             time.sleep(0.5)
             if sb.execute_script(_SOLVED_JS):
@@ -243,8 +248,9 @@ def handle_turnstile(sb) -> bool:
 def login(sb) -> bool:
     print(f"🌐 打开登录页面: {BASE_URL}/auth/login")
     sb.uc_open_with_reconnect(BASE_URL + "/auth/login", reconnect_time=8)
-    time.sleep(6)
+    time.sleep(8)
 
+    # 先等待 Cloudflare 验证通过（最多等 30 秒）
     print("⏳ 等待 Cloudflare 验证通过...")
     cf_passed = False
     for i in range(30):
@@ -258,10 +264,11 @@ def login(sb) -> bool:
         print("⚠️ Cloudflare 验证可能未通过，继续尝试...")
 
     try:
-        sb.wait_for_element('input[name="email"]', timeout=15)
+        sb.wait_for_element('input[type="email"]', timeout=15)
     except Exception:
+        # 尝试大写选择器作为后备
         try:
-            sb.wait_for_element('input[name="Email"]', timeout=5)
+            sb.wait_for_element('input[type="Email"]', timeout=5)
         except Exception:
             print("❌ 页面未加载出登录表单")
             cur_url = sb.get_current_url()
@@ -282,13 +289,14 @@ def login(sb) -> bool:
         pass
 
     print(f"📧 填写邮箱...")
-    js_fill_input(sb, 'input[name="email"]', EMAIL)
-    time.sleep(0.3)
+    js_fill_input(sb, 'input[type="email"]', EMAIL)
+    time.sleep(1)
     
     print("🔑 填写密码...")
-    js_fill_input(sb, 'input[name="password"]', PASSWORD)
-    time.sleep(1)
+    js_fill_input(sb, 'input[type="password"]', PASSWORD)
+    time.sleep(3)
 
+    # 等待 Turnstile 验证框出现（最多 10 秒）
     print("⏳ 等待 Turnstile 验证框出现...")
     ts_found = False
     for i in range(10):
@@ -343,12 +351,14 @@ def _goto_server_detail(sb) -> bool:
     print("\n🖥️  正在进入服务器续期页...")
     time.sleep(5)
 
+    # 检查页面顶部是否已有"还无法续期"全局提示
     alert_text = _read_alert(sb)
     if alert_text and "can't renew" in alert_text.lower():
         print(f"ℹ️  页面顶部提示: {alert_text}")
         send_tg_message("ℹ️", "⚠️ 未到续期时间", alert_text)
         return False
 
+    # 多种选择器尝试查找 See 链接
     selectors = [
         'a[href*="/servers/edit?id="]',
         'td a[href*="/servers/edit"]',
@@ -365,6 +375,7 @@ def _goto_server_detail(sb) -> bool:
         except Exception:
             continue
 
+    # 选择器全部失败，尝试通过文本内容查找
     if see_link is None:
         print("⚠️ 选择器未命中，尝试文本匹配...")
         try:
@@ -377,6 +388,7 @@ def _goto_server_detail(sb) -> bool:
             pass
 
     if see_link is None:
+        # 打印调试信息帮助排查
         cur_url = sb.get_current_url()
         title = sb.get_title() or ""
         print(f"❌ 未找到 'See' 链接")
@@ -423,7 +435,7 @@ def _open_renew_modal(sb) -> bool:
     """)
     time.sleep(0.8)
     renew_btn.click()
-    print("🖱️ 已点击 Renew 按钮，等待 ALTCHA 验证框...")
+    print("🖱️ 已点击 Renew 按钮，等待确认框...")
     time.sleep(3)
 
     try:
@@ -435,111 +447,122 @@ def _open_renew_modal(sb) -> bool:
         return False
 
 
-def _solve_altcha(sb) -> bool:
-    """处理 ALTCHA 人机验证"""
-    print("\n🔐 处理 ALTCHA 人机验证...")
-    time.sleep(2)
-
-    if sb.execute_script(_ALTCHA_SOLVED_JS):
-        print("✅ ALTCHA 已自动通过")
-        return True
-
-    coords = None
-    try:
-        coords = sb.execute_script(_ALTCHA_EXPAND_JS)
-    except Exception:
-        pass
-
-    if coords:
-        print(f"  📍 找到模态框内 iframe 坐标: ({coords['cx']}, {coords['cy']})")
-
-    for attempt in range(3):
-        if sb.execute_script(_ALTCHA_SOLVED_JS):
-            print(f"✅ ALTCHA 验证通过（第 {attempt + 1} 轮）")
-            return True
-
-        if coords:
-            try:
-                wi = sb.execute_script(_WININFO_JS)
-            except Exception:
-                wi = {"sx": 0, "sy": 0, "oh": 800, "ih": 768}
-            bar = wi["oh"] - wi["ih"]
-            ax  = coords["cx"] + wi["sx"]
-            ay  = coords["cy"] + wi["sy"] + bar
-            print(f"🖱️  ALTCHA点击复选框  ({ax}, {ay})")
-            _xdotool_click(ax, ay)
-
-        try:
-            iframes = sb.find_elements('div.modal.show iframe')
-            for iframe in iframes:
-                try:
-                    iframe.click()
-                    print("🖱️  SeleniumBase 点击模态框 iframe")
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        sb.execute_script("""
-            (function(){
-                var modal = document.querySelector('div.modal.show');
-                if (!modal) return;
-                var iframes = modal.querySelectorAll('iframe');
-                for (var i = 0; i < iframes.length; i++) {
-                    iframes[i].click();
-                    iframes[i].dispatchEvent(new MouseEvent('click', {bubbles:true}));
-                }
-                var labels = modal.querySelectorAll('label');
-                for (var j = 0; j < labels.length; j++) {
-                    var txt = (labels[j].textContent || '').toLowerCase();
-                    if (txt.includes('robot') || txt.includes('captcha') || txt.includes('verify'))
-                        labels[j].click();
-                }
-                var cbs = modal.querySelectorAll('input[type="checkbox"]');
-                for (var k = 0; k < cbs.length; k++) {
-                    if (!cbs[k].disabled) {
-                        cbs[k].click();
-                        cbs[k].dispatchEvent(new MouseEvent('click', {bubbles:true}));
-                    }
-                }
-            })()
-        """)
-
-        for _ in range(6):
-            time.sleep(1)
-            if sb.execute_script(_ALTCHA_SOLVED_JS):
-                print(f"✅ ALTCHA 验证通过（第 {attempt + 1} 轮）")
-                return True
-
-        print(f"  ⚠️ 第 {attempt + 1} 轮未通过，重试...")
-        try:
-            new_coords = sb.execute_script(_ALTCHA_EXPAND_JS)
-            if new_coords:
-                coords = new_coords
-        except Exception:
-            pass
-
-    print("  ❌ ALTCHA 3 轮均失败")
-    return False
+# def _solve_altcha(sb) -> bool:
+#     """处理 ALTCHA 人机验证"""
+#     print("\n🔐 处理 ALTCHA 人机验证...")
+#     time.sleep(2)
+#
+#     # 先检查是否已自动通过
+#     if sb.execute_script(_ALTCHA_SOLVED_JS):
+#         print("✅ ALTCHA 已自动通过")
+#         return True
+#
+#     # 展开模态框内 iframe 并获取坐标
+#     coords = None
+#     try:
+#         coords = sb.execute_script(_ALTCHA_EXPAND_JS)
+#     except Exception:
+#         pass
+#
+#     if coords:
+#         print(f"  📍 找到模态框内 iframe 坐标: ({coords['cx']}, {coords['cy']})")
+#
+#     # 最多尝试 3 轮
+#     for attempt in range(3):
+#         if sb.execute_script(_ALTCHA_SOLVED_JS):
+#             print(f"✅ ALTCHA 验证通过（第 {attempt + 1} 轮）")
+#             return True
+#
+#         # 策略 1: xdotool 物理点击 iframe 坐标
+#         if coords:
+#             try:
+#                 wi = sb.execute_script(_WININFO_JS)
+#             except Exception:
+#                 wi = {"sx": 0, "sy": 0, "oh": 800, "ih": 768}
+#             bar = wi["oh"] - wi["ih"]
+#             ax  = coords["cx"] + wi["sx"]
+#             ay  = coords["cy"] + wi["sy"] + bar
+#             print(f"🖱️  ALTCHA点击复选框  ({ax}, {ay})")
+#             _xdotool_click(ax, ay)
+#
+#         # 策略 2: SeleniumBase 原生点击模态框内 iframe 元素
+#         try:
+#             iframes = sb.find_elements('div.modal.show iframe')
+#             for iframe in iframes:
+#                 try:
+#                     iframe.click()
+#                     print("🖱️  SeleniumBase 点击模态框 iframe")
+#                 except Exception:
+#                     pass
+#         except Exception:
+#             pass
+#
+#         # 策略 3: JS 遍历模态框内所有可点击元素
+#         sb.execute_script("""
+#             (function(){
+#                 var modal = document.querySelector('div.modal.show');
+#                 if (!modal) return;
+#                 // 点击 iframe
+#                 var iframes = modal.querySelectorAll('iframe');
+#                 for (var i = 0; i < iframes.length; i++) {
+#                     iframes[i].click();
+#                     iframes[i].dispatchEvent(new MouseEvent('click', {bubbles:true}));
+#                 }
+#                 // 点击含 checkbox 的 label
+#                 var labels = modal.querySelectorAll('label');
+#                 for (var j = 0; j < labels.length; j++) {
+#                     var txt = (labels[j].textContent || '').toLowerCase();
+#                     if (txt.includes('robot') || txt.includes('captcha') || txt.includes('verify'))
+#                         labels[j].click();
+#                 }
+#                 // 点击 checkbox
+#                 var cbs = modal.querySelectorAll('input[type="checkbox"]');
+#                 for (var k = 0; k < cbs.length; k++) {
+#                     if (!cbs[k].disabled) {
+#                         cbs[k].click();
+#                         cbs[k].dispatchEvent(new MouseEvent('click', {bubbles:true}));
+#                     }
+#                 }
+#             })()
+#         """)
+#
+#         # 等待验证结果
+#         for _ in range(6):
+#             time.sleep(1)
+#             if sb.execute_script(_ALTCHA_SOLVED_JS):
+#                 print(f"✅ ALTCHA 验证通过（第 {attempt + 1} 轮）")
+#                 return True
+#
+#         print(f"  ⚠️ 第 {attempt + 1} 轮未通过，重试...")
+#         # 重新获取坐标（iframe 可能已重新渲染）
+#         try:
+#             new_coords = sb.execute_script(_ALTCHA_EXPAND_JS)
+#             if new_coords:
+#                 coords = new_coords
+#         except Exception:
+#             pass
+#
+#     print("  ❌ ALTCHA 3 轮均失败")
+#     return False
 
 
 def _submit_renew(sb):
     """点击模态框内的 Renew 提交按钮"""
     print("🖱️  点击模态框中的 Renew 按钮...")
     try:
-        submit = sb.find_element('div.modal.show button.btn-primary', timeout=5)
+        submit = sb.find_element('div.modal-footer button.btn.btn-primary', timeout=10)
         submit.click()
     except Exception:
         sb.execute_script("""
             (function(){
-                var m = document.querySelector('div.modal.show');
+                var m = document.querySelector('button.btn.btn-primary');
                 if (!m) return;
                 var bs = m.querySelectorAll('button');
                 for (var i = 0; i < bs.length; i++)
                     if (/renew/i.test(bs[i].textContent)) bs[i].click();
             })()
         """)
-    time.sleep(3)
+    time.sleep(8)
 
 
 def _check_renew_result(sb):
@@ -587,9 +610,9 @@ def renew_server(sb):
     if not _open_renew_modal(sb):
         return
 
-    altcha_ok = _solve_altcha(sb)
-    if not altcha_ok:
-        print("⚠️ ALTCHA 验证未通过，仍尝试提交 Renew...")
+    # altcha_ok = _solve_altcha(sb)
+    # if not altcha_ok:
+    #     print("⚠️ ALTCHA 验证未通过，仍尝试提交 Renew...")
 
     _submit_renew(sb)
     _check_renew_result(sb)
